@@ -32,7 +32,10 @@ describe('E2E Agent Run', () => {
     `;
 
     const persistence = new AgentPersistence();
-    const contextBuilder = new ContextBuilder();
+    const memoryService = new MemoryService();
+    const taskService = new TaskService();
+    const automationService = new AutomationService();
+    const contextBuilder = new ContextBuilder(persistence, memoryService, taskService, automationService);
     const groq = new GroqProvider(process.env.GROQ_API_KEY!);
     const registry = new ToolRegistry();
     const policyEngine = new PolicyEngine();

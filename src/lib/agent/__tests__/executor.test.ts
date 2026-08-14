@@ -6,11 +6,12 @@ describe('Tool Executor', () => {
   const registry = new ToolRegistry();
   // Register a mock tool
   registry.register({
-    name: 'test.tool',
-    description: 'A test tool',
-    parameters: { type: 'object', properties: {} },
-    risk_level: 'low',
-    execute: async (args: any, ctx: any) => ({ success: true, args })
+    name: 'mock_tool',
+    schema: {
+      name: 'mock_tool',
+      parameters: { type: 'object', properties: {} }
+    },
+    handler: async () => 'mock success'
   });
 
   it('should prevent execution if tool is not registered', async () => {
@@ -18,7 +19,7 @@ describe('Tool Executor', () => {
     const result = await executor.executeAll([{
       id: 'call_123',
       name: 'non.existent',
-      arguments: '{}'
+      arguments: {}
     }], { id: 'test' } as any, { autonomy_level: 3, enabled_tools: ['non.existent'] } as any);
 
     expect(result.results[0].error).toBeDefined();

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { default as cronParser } from 'cron-parser';
 
 function calculateNextRunAt(cronExpression: string): Date {
+  // @ts-ignore: cron-parser ESM types are problematic in Vitest/Next builds
   const interval = cronParser.parseExpression(cronExpression, { utc: true });
   return interval.next().toDate();
 }

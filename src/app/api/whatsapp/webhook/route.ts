@@ -1,70 +1,105 @@
 import { NextResponse } from 'next/server';
 import { AgentOrchestrator } from '@/lib/agent/orchestrator';
-import { sendWhatsAppMessage } from '@/lib/whatsapp/client';
+import { AgentPersistence } from '@/lib/agent/persistence';
+import { ContextBuilder } from '@/lib/agent/context';
+import { Planner } from '@/lib/agent/planner';
+import { ToolExecutor } from '@/lib/agent/executor';
+import { PolicyEngine } from '@/lib/agent/policy';
+import { AuditService } from '@/lib/audit/service';
+import { MemoryService } from '@/lib/memory/service';
+import { TaskService } from '@/lib/tasks/service';
+import { AutomationService } from '@/lib/automation/service';
+import { GroqProvider } from '@/lib/llm/groq';
+import { toolRegistry } from '@/lib/tools/registry';
+
+// Ensure tools are registered
+import '@/lib/tools/memory';
+import '@/lib/tools/tasks';
+import '@/lib/tools/automation';
+import '@/lib/tools/search';
+import '@/lib/tools/agent';
 
 export const maxDuration = 300; // Allow 5 minutes for agent to process
 
-// Verify Webhook for Meta
-export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url);
-  const mode = searchParams.get('hub.mode');
-  const token = searchParams.get('hub.verify_token');
-  const challenge = searchParams.get('hub.challenge');
+// Dependency injection
+const groq = new GroqProvider(process.env.GROQ_API_KEY!);
+const persistence = new AgentPersistence();
+const memoryService = new MemoryService();
+const taskService = new TaskService();
+const automationService = new AutomationService();
+const policyEngine = new PolicyEngine();
+const auditService = new AuditService();
+const executor = new ToolExecutor(toolRegistry, policyEngine, auditService);
+const contextBuilder = new ContextBuilder(persistence, memoryService, taskService, automationService);
+const planner = new Planner(groq, executor);
+const orchestrator = new AgentOrchestrator(persistence, contextBuilder, planner);
 
-  if (mode && token) {
-    if (mode === 'subscribe' && token === process.env.WHATSAPP_VERIFY_TOKEN) {
-      console.log('WEBHOOK_VERIFIED');
-      return new NextResponse(challenge, { status: 200 });
-    } else {
-      return new NextResponse('Forbidden', { status: 403 });
-    }
+/**
+ * POST /api/whatsapp/webhook
+ * 
+ * Receives normalized messages from the WhatsApp bridge.
+ * Authenticates with X-Bridge-Secret header.
+ * Calls the agent orchestrator and returns the reply.
+ * The bridge is responsible for forwarding the reply back to WhatsApp.
+ */
+export async function POST(request: Request) {
+  // ── Authentication ────────────────────────────────────────────────────────
+  const bridgeSecret = request.headers.get('x-bridge-secret');
+  if (!bridgeSecret || bridgeSecret !== process.env.BRIDGE_SECRET) {
+    console.warn('[whatsapp/webhook] Unauthorized request — bad or missing X-Bridge-Secret');
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  return new NextResponse('Bad Request', { status: 400 });
-}
-
-// Receive Messages
-export async function POST(request: Request) {
   try {
     const body = await request.json();
 
-    // Check if it's a WhatsApp status update or message
-    if (body.object === 'whatsapp_business_account') {
-      const entry = body.entry?.[0];
-      const changes = entry?.changes?.[0];
-      const value = changes?.value;
+    const {
+      agent_id,
+      user_id,
+      message,
+      source,
+      request_id,
+      senderId,
+      messageId,
+      channel,
+    } = body;
 
-      // Handle actual messages
-      if (value?.messages && value.messages.length > 0) {
-        const message = value.messages[0];
-        const from = message.from; // Sender phone number
-        
-        // We only handle text messages for now
-        if (message.type === 'text') {
-          const text = message.text.body;
-          
-          console.log(`Received WhatsApp message from ${from}: ${text}`);
-
-          // Forward to our Agent Orchestrator
-          const orchestrator = new AgentOrchestrator();
-          
-          // Use the phone number as the conversation/session ID so history is maintained
-          const response = await orchestrator.run({
-            query: text,
-            conversation_id: from 
-          });
-
-          // Send the agent's reply back via WhatsApp
-          await sendWhatsAppMessage(from, response.response);
-        }
-      }
-
-      return new NextResponse('OK', { status: 200 });
-    } else {
-      return new NextResponse('Not Found', { status: 404 });
+    if (!agent_id || !user_id || !message || !request_id) {
+      return NextResponse.json(
+        { error: 'Missing required fields: agent_id, user_id, message, request_id' },
+        { status: 400 }
+      );
     }
-  } catch (error) {
-    console.error('Webhook error:', error);
-    return new NextResponse('Internal Server Error', { status: 500 });
+
+    console.log(`[whatsapp/webhook] Message from ${senderId?.slice(-4) ?? 'unknown'}: "${message.slice(0, 80)}"`);
+
+    const agentResponse = await orchestrator.run({
+      agent_id,
+      user_id,
+      message,
+      source: source ?? 'whatsapp',
+      request_id,
+      metadata: {
+        channel: channel ?? 'whatsapp',
+        senderId,
+        messageId,
+      },
+    });
+
+    return NextResponse.json({
+      reply: agentResponse.reply,
+      status: agentResponse.status,
+      run_id: agentResponse.run_id,
+    });
+
+  } catch (error: any) {
+    console.error('[whatsapp/webhook] Error:', error);
+    if (error.name === 'AuthError') {
+      return NextResponse.json({ error: error.message }, { status: 401 });
+    }
+    return NextResponse.json(
+      { error: 'Internal Server Error', details: error.message },
+      { status: 500 }
+    );
   }
 }

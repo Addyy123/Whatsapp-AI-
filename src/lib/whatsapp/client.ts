@@ -1,38 +1,44 @@
-export async function sendWhatsAppMessage(to: string, message: string) {
-  const token = process.env.WHATSAPP_TOKEN;
-  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+// src/lib/whatsapp/client.ts
+// WhatsApp bridge HTTP client.
+// Used by the agent tools/automations to send outbound WhatsApp messages
+// through the linked-device bridge.
+// 
+// This replaces the old Meta Cloud API implementation.
 
-  if (!token || !phoneNumberId) {
-    console.error("Missing WhatsApp environment variables");
+const BRIDGE_URL = process.env.WHATSAPP_BRIDGE_URL;
+const BRIDGE_SECRET = process.env.BRIDGE_SECRET;
+
+/**
+ * Send a WhatsApp message through the bridge.
+ * @param to   - Recipient phone number (e.g. "911234567890" or full JID)
+ * @param text - Message text
+ */
+export async function sendWhatsAppMessage(to: string, text: string): Promise<void> {
+  if (!BRIDGE_URL || !BRIDGE_SECRET) {
+    console.error('[whatsapp/client] WHATSAPP_BRIDGE_URL or BRIDGE_SECRET is not configured');
     return;
   }
 
-  const url = `https://graph.facebook.com/v17.0/${phoneNumberId}/messages`;
-
   try {
-    const response = await fetch(url, {
-      method: "POST",
+    const res = await fetch(`${BRIDGE_URL}/bridge/send`, {
+      method: 'POST',
       headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
+        'Content-Type': 'application/json',
+        'X-Bridge-Secret': BRIDGE_SECRET,
       },
       body: JSON.stringify({
-        messaging_product: "whatsapp",
-        recipient_type: "individual",
-        to: to,
-        type: "text",
-        text: {
-          preview_url: false,
-          body: message,
-        },
+        connectionId: 'whatsapp',
+        recipient: to,
+        text,
       }),
+      signal: AbortSignal.timeout(15_000),
     });
 
-    if (!response.ok) {
-      const errorData = await response.json();
-      console.error("Failed to send WhatsApp message:", errorData);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      console.error('[whatsapp/client] Send failed:', res.status, err);
     }
   } catch (error) {
-    console.error("Error sending WhatsApp message:", error);
+    console.error('[whatsapp/client] Error sending message:', error);
   }
 }
